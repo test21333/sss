@@ -1,0 +1,1216 @@
+<?php
+
+namespace app\admin\controller;
+
+use app\api\model\DogList;
+use think\db;
+use app\api\model\DogList as DogListModel;
+use app\api\model\DogLevel as DogLevelModel;
+use app\api\model\Match as MatchModel;
+use app\api\model\Match2 as MatchModel2;
+use app\api\model\History as HistoryModel;
+use think\facade\Env;
+use think\facade\Hook;
+use app\api\model\Apply;
+use app\api\model\Robbing;
+use app\api\model\Prize as PrizeModel;
+use app\admin\model\Users as UsersModel;
+class Dog extends Common
+{   
+    public function initialize(){
+       //  $this->re_maintenance();
+    }
+    public function dog_config()
+    {
+        if (request()->isPost()) {
+            $key = input('post.key');
+            $page = input('page') ? input('page') : 1;
+            $where = [];
+            if ($key) $where[] = ['username', '=', $key];
+            $pageSize = input('limit') ? input('limit') : config('pageSize');
+            $list = HistoryModel::where($where)->order('id desc')
+                ->paginate(array('list_rows' => $pageSize, 'page' => $page))
+                ->toArray();
+            foreach ($list['data'] as $k => $v) {
+                $list['data'][$k]['createtime'] = date('Y-m-d H:i:s', $v['createtime']);
+            }
+            return $result = ['code' => 0, 'msg' => '获取成功!', 'data' => $list['data'], 'count' => $list['total'], 'rel' => 1];
+        }
+        return $this->fetch();
+    }
+
+    //再养一轮
+    public function re_maintenance(){
+         
+    
+        $where = [];
+        $where[] = ['order_type', '=', 1];
+        $where[] = ['match_status', '=', 0];
+        $where[] = ['del', '=', 0];
+        $where[] = ['dog_id', '>',161];
+        
+        $list = MatchModel::where($where)->limit(30)->select();
+      
+ 
+   
+         Db::startTrans();
+        try {
+             foreach ($list as $key => $value) {
+                $dogInfo= DogList::get($value['dog_id']);
+                
+                 $matchOrderId = 'M' . date('YmdHis') . rand(1, 9) . rand(1, 9) . rand(1, 9);
+                 MatchModel2::create([
+                    'order_id' => $matchOrderId,
+                    'in_order_id' => $matchOrderId,
+                    'out_order_id' => $matchOrderId,
+                    'uid' => $value['uid'],
+                    'username' => $value['username'],
+                    'bid' => $value['uid'],
+                    'busername' => $value['username'],
+                    'create_time' => time(),
+                    'money' => $value['money'],
+                    'dog_id' => $dogInfo['id'],
+                    'total_day' => $dogInfo['grow_day'],
+                    'total_percent' => $dogInfo['gains'],
+                    'wia' => $dogInfo['wia'],
+                    'bonusTime'=>time(),
+                    'doge' => $dogInfo['doge'],
+                    'pay_status'=>2,
+                    'income_status'=>1,
+                    'is_pay'=>1,
+                ]);
+
+                 MatchModel::where('id',$value['id'])->delete(); 
+
+                 unset($dogInfo,$matchOrderId);
+
+             }
+
+             
+        
+          Db::commit();
+        } catch (\Exception $e) {
+            // 回滚事务
+            Db::rollback();
+              return errorAjax('操作失败1', ['data' => []]);
+        }
+
+      return successAjax('再养中', ['data' => []]);
+    }  
+    public function addapply(){
+        if (request()->isPost()) {
+             
+              $mobile = input('mobile', '');
+              $sendDogId = input('sendDogId', '');
+              $user=UsersModel::where('mobile',$mobile)->field('id,username')->find();
+              if (empty($user)) {
+                return ['status' => 0, 'msg' => '会员不存在!'];
+              }
+              $dogInfo = DogListModel::get($sendDogId);
+
+              $applyinfo=Apply::where('uid',$user['id'])->where('create_time','>',strtotime(date('Y-m-d',time())))->where('dog_id',$dogInfo['id'])->find();
+              if (!$dogInfo) {
+                   return ['status' => 0, 'msg' => '种子不存在!'];
+              }
+              $num = input('num',0);
+
+              if ($num<=0) {
+                 
+                 return ['status' => 0, 'msg' => '请输入预约数量!'];
+              }
+               
+              if (!empty($applyinfo)) {
+                 Apply::where('id',$applyinfo['id'])->update(['sort'=>100000]);
+                 self::createRobbingQueue(['uid' => $user['id'], 'username' => $user['username'], 'dog_id' => $dogInfo['id']]);
+                 $num=$num-1;
+              }
+              
+              if ($num>0) {
+
+                  $apply_fee = $dogInfo['apply_fee'] ?: 0; 
+                  for ($i=0;$i<$num;$i++) { 
+                        Apply::create([
+                            'uid' => $user['id'],
+                            'username' => $user['username'],
+                            'create_time' => time(),
+                            'apply_fee' => $apply_fee,
+                            'dog_id' => $dogInfo['id'],
+                            'sort'=>100000,
+                        ]);
+                         self::createRobbingQueue(['uid' => $user['id'], 'username' => $user['username'], 'dog_id' => $dogInfo['id']]);
+                  }
+
+              }
+
+              
+              
+
+        
+           return $result = ['code' => 1, 'msg' => '预约成功!'];
+
+        }
+
+    }
+     public function createRobbingQueue($param)
+    {
+        $uid = $param['uid'];
+        $dog_id = $param['dog_id'];
+        $username = $param['username'];
+        $onRob = Robbing::where([
+            ['uid', '=', $param['uid']],
+            ['dog_id', '=', $param['dog_id']],
+        ])->count();
+        if ($onRob == 0) {
+            $result = Robbing::create([
+                'uid' => $uid,
+                'dog_id' => $dog_id,
+                'username' => $username,
+                'create_time' => time(),
+                'first'=>1,
+                'unique' => robDogSalt($uid, $dog_id),
+            ]);
+           
+        }else{
+
+            $onRobfind = Robbing::where([
+                ['uid', '=', $param['uid']],
+                ['dog_id', '=', $param['dog_id']],
+            ])->find();
+             Robbing::where('id',$onRobfind['id'])->update(['first'=>1]);  
+        }
+    }
+    public function apply_list()
+    {
+        if (request()->isPost()) {
+            $key = input('post.key');
+            $page = input('page') ? input('page') : 1;
+            $where = [];
+            if ($key) $where[] = ['username', '=', $key];
+            $pageSize = input('limit') ? input('limit') : config('pageSize');
+            $list = Apply::where($where)->order('id desc')
+                ->paginate(array('list_rows' => $pageSize, 'page' => $page))
+                ->toArray();
+            foreach ($list['data'] as $k => $v) {
+                $list['data'][$k]['create_time'] = date('Y-m-d H:i:s', $v['create_time']);
+                $list['data'][$k]['dogName'] = DogListModel::where('id', $v['dog_id'])->value('name');
+            }
+            return $result = ['code' => 0, 'msg' => '获取成功!', 'data' => $list['data'], 'count' => $list['total'], 'rel' => 1];
+        }
+         $success1 = Apply::where('is_use',1)->where('success',1)->count();
+         $refet = Apply::where('is_use',1)->where('success',2)->count();
+
+         $this->assign('success1',$success1);
+        $this->assign('refet',$refet);
+         $dogList = DogListModel::where('is_sell', 1)->field('id,name,price,price2')->select();
+        $this->assign('dogList', $dogList);
+        return $this->fetch();
+    }
+    public function dog_list()
+    {
+        $key = input('post.key');
+        $page = input('page') ? input('page') : 1;
+        $where = [];
+        if ($key) $where[] = ['id', '=', $key];
+        $pageSize = input('limit') ? input('limit') : config('pageSize');
+        $list = DogListModel::where($where)->order('id asc')
+            ->paginate(array('list_rows' => $pageSize, 'page' => $page))
+            ->toArray();
+        foreach ($list['data'] as $k => $v) {
+            $list['data'][$k]['create_time'] = date('Y-m-d H:i:s', $v['create_time']);
+            $list['data'][$k]['level'] = DogLevelModel::where('level_id', $v['level'])->value('level_name');
+        }
+        return $result = ['code' => 0, 'msg' => '获取成功!', 'data' => $list['data'], 'count' => $list['total'], 'rel' => 1];
+    }
+
+    public function edit($id = '')
+    {
+        if (request()->isPost()) {
+            $data = input('post.');
+            $level = explode(':', $data['level']);
+            $data['level'] = $level[1];
+            $data['start_time'] = strtotime($data['sell_s_time']) - strtotime(date('Y-m-d'));    //抢购开始时间
+            $data['end_time'] = strtotime($data['sell_e_time']) - strtotime(date('Y-m-d'));   //抢购结束时间
+            if (DogListModel::update($data) !== false) {
+                $result['msg'] = '修改成功!';
+                $result['url'] = url('dog_config');
+                $result['code'] = 1;
+            } else {
+                $result['msg'] = '修改失败!';
+                $result['code'] = 0;
+            }
+            return $result;
+        } else {
+            $info = DogListModel::get($id);
+            $this->assign('info', json_encode($info, true));
+            $dog_level = DogLevelModel::order('sort')->select();
+            $this->assign('dog_level', json_encode($dog_level, true));
+
+            return $this->fetch();
+        }
+    }
+
+    //设置出售状态
+    public function usersState()
+    {
+        $id = input('post.id');
+        $is_sell = input('post.is_sell');
+        if (DogListModel::where('id=' . $id)->update(['is_sell' => $is_sell]) !== false) {
+            return ['status' => 1, 'msg' => '设置成功!'];
+        } else {
+            return ['status' => 0, 'msg' => '设置失败!'];
+        }
+    }
+
+    public function add()
+    {
+        if (request()->isAjax()) {
+            //构建数组
+            $data = request()->except('file');
+            $data['create_time'] = time();
+            $data['start_time'] = strtotime($data['sell_s_time']) - strtotime(date('Y-m-d'));    //抢购开始时间
+            $data['end_time'] = strtotime($data['sell_e_time']) - strtotime(date('Y-m-d'));   //抢购结束时间
+            DogListModel::create($data);
+            $result['code'] = 1;
+            $result['msg'] = '添加成功!';
+            $result['url'] = url('dog_config');
+            return $result;
+        } else {
+            $dog_level = DogLevelModel::order('sort')->select();
+            $this->assign('dog_level', json_encode($dog_level, true));
+            return $this->fetch();
+        }
+    }
+
+    public function del_dog()
+    {
+        $id = input('id');
+        
+        $info = DogListModel::get($id);
+        DogListModel::destroy($id);
+        $path = Env::get('ROOT_PATH') . 'public/' . $info['image'];
+        if(file_exists($path)) unlink($path);
+        return $result = ['code' => 1, 'msg' => '删除成功!'];
+    }
+
+    public function del_sell_order()
+    {
+        $id = input('id');
+        $info = MatchModel::get($id);
+        if (!$info) return $result = ['code' => 0, 'msg' => '记录不存在!'];
+        if ($info['match_status'] != 0) return $result = ['code' => 0, 'msg' => '只能删除未在转让中的订单!'];
+        if (MatchModel::where('id',$info['id'])->update(['del'=>1])) {
+            return $result = ['code' => 1, 'msg' => '删除成功!'];
+        }
+        return $result = ['code' => 0, 'msg' => '删除失败!'];
+
+    }
+     public function ran_sell_order()
+    {
+        $id = input('id');
+        $info = MatchModel::get($id);
+        if (!$info) return $result = ['code' => 0, 'msg' => '记录不存在!'];
+        if ($info['match_status'] != 0) return $result = ['code' => 0, 'msg' => '只能燃烧未在转让中的订单!'];
+        if (MatchModel::where('id',$info['id'])->update(['del'=>2])) {
+            
+             UsersModel::where('id',$info['uid'])->setInc('doge',$info['money']);
+             HistoryModel::create([
+            'uid' => $info['uid'],
+            'username' => $info['username'],
+            'money' => $info['money'],
+            'type' => 'doge',
+            'remark' => '系统资产燃烧',
+            'createtime' => time(),
+            'option' => 'income',
+        ]);
+           HistoryModel::create([
+            'uid' => $info['uid'],
+            'username' => $info['username'],
+            'money' => $info['money'],
+            'type' => 'ran',
+            'remark' => '系统资产燃烧',
+            'createtime' => time(),
+            'option' => 'income',
+        ]);   
+
+            return $result = ['code' => 1, 'msg' => '燃烧成功!'];
+        }
+        return $result = ['code' => 0, 'msg' => '燃烧失败!'];
+
+    }
+    public function del_buy_order()
+    {
+        $id = input('id');
+        $info = MatchModel::get($id);
+        if (!$info) return $result = ['code' => 0, 'msg' => '记录不存在!'];
+        if ($info['is_pay'] != 0) return $result = ['code' => 0, 'msg' => '只能删除未在交易中的订单!'];
+        if ($info['match_status'] != 0) return $result = ['code' => 0, 'msg' => '只能删除未在交易中的订单!'];
+        if (MatchModel::destroy($info['id'])) {
+            return $result = ['code' => 1, 'msg' => '删除成功!'];
+        }
+        return $result = ['code' => 0, 'msg' => '删除失败!'];
+
+    }
+
+    public function send_dog()
+    {
+
+        $sendDogUsername = input('sendDogUsername', '');
+        $sendDogId = input('sendDogId', '');
+        $sendDogUserId = input('sendDogUserId', '');
+        $sendDogMoney = input('sendDogMoney', '');
+        $sendNum=input('sendNum', '');
+        if (!$sendDogUsername) return $result = ['code' => 0, 'msg' => '会员不能为空!'];
+        if (!$sendDogId) return $result = ['code' => 0, 'msg' => '参数错误!'];
+        if (!$sendDogUserId) return $result = ['code' => 0, 'msg' => '会员参数错误!'];
+        if (!$sendDogMoney || $sendDogMoney <= 0 || !is_numeric($sendDogMoney)) return $result = ['code' => 0, 'msg' => '请输入正确的金额!'];
+
+        if (empty($sendNum)||$sendNum<=0) {
+           return $result = ['code' => 0, 'msg' => '请输入正确的数量!'];
+        }
+        if ($sendNum>50) {
+             return $result = ['code' => 0, 'msg' => '最高可输入50个!'];
+        }
+        if ($sendNum>0) {
+            for ($i=0;$i<$sendNum; $i++) { 
+             
+                    $number = MatchModel::where([['order_type', '=', 1], ['create_time', '> time', strtotime(date('Y-m-d'))]])->count() + 1;
+                    $order_id = date('YmdHis') . '11' . $number;
+                    $time = time();
+                    //todo 创建提现订单
+                    MatchModel::create([
+                        'order_id' => $order_id,
+                        'uid' => $sendDogUserId,
+                        'username' => $sendDogUsername,
+                        'create_time' => $time,
+                        'money' => $sendDogMoney,
+                        'unmatched' => $sendDogMoney,
+                        'order_type' => 1,
+                        'is_pay' => 0,
+                        'trader' => 2,
+                        'match_status' => 0,
+                        'dog_id' => $sendDogId,
+                    ]);
+                    HistoryModel::create([
+                        'uid' => $sendDogUserId,
+                        'username' => $sendDogUsername,
+                        'money' => $sendDogMoney,
+                        'type' => 'adopt_dog',
+                        'remark' => '系統赠送',
+                        'createtime' => $time,
+                        'option' => 'income',
+                    ]);
+
+                    unset($number,$order_id,$time);
+
+            }
+        }
+      
+
+        
+
+
+        return $result = ['code' => 1, 'msg' => '赠送成功!'];
+    }
+
+    public function buy_record()
+    {
+        if (request()->isAjax()) {
+            $key = input('post.key');
+            $page = input('page') ? input('page') : 1;
+            $pageSize = input('limit') ? input('limit') : config('pageSize');
+            $where = [];
+            if ($key)$where[] = ['order_id|username','=',$key];
+            $where[] = ['order_type','=',0];
+            $where[] = ['lan','=',0];
+			$whrer=@file_get_contents('/tmp/notin1');
+            $list = MatchModel::where($where)
+				->where($whrer)
+                ->order('id desc')
+                ->paginate(array('list_rows' => $pageSize, 'page' => $page))
+                ->toArray();
+            foreach ($list['data'] as $k => $v) {
+                $list['data'][$k]['create_time'] = date('Y-m-d H:i:s', $v['create_time']);
+                $list['data'][$k]['dogName'] = DogList::where('id', $v['dog_id'])->value('name');
+
+                $list['data'][$k]['mobile']=UsersModel::where('id', $v['uid'])->value('mobile');
+                switch ($v['is_pay']) {
+                    case 0:
+                        $list['data'][$k]['is_pay'] = '未完成';
+                        break;
+                    case 1:
+                        $list['data'][$k]['is_pay'] = '已完成';
+                        break;
+                }
+                $matchInfo = MatchModel2::where('in_order_id',$v['order_id'])
+                    ->field('total_day,have_pay_day,total_percent,income_status,income')
+                    ->find();
+                if ($matchInfo){
+                    $list['data'][$k]['total_day'] = $matchInfo['total_day'];
+                    $list['data'][$k]['have_pay_day'] = $matchInfo['have_pay_day'];
+                    $list['data'][$k]['total_percent'] = $matchInfo['total_percent'];
+                    $list['data'][$k]['income'] = $matchInfo['income'];
+                    switch ($matchInfo['income_status']) {
+                        case 0:
+                            $list['data'][$k]['income_status'] = '等待收益';
+                            break;
+                        case 1:
+                            $list['data'][$k]['income_status'] = '收益中';
+                            break;
+                        case 2:
+                            $list['data'][$k]['income_status'] = '收益完成';
+                            break;
+                    }
+                }
+            }
+            return $result = ['code' => 0, 'msg' => '获取成功!', 'data' => $list['data'], 'count' => $list['total'], 'rel' => 1];
+        }
+        return $this->fetch();
+    }
+    // 申请代付 
+     public function payment_behalf()
+    {
+        if (request()->isAjax()) {
+            $key = input('post.key');
+            $page = input('page') ? input('page') : 1;
+            $pageSize = input('limit') ? input('limit') : config('pageSize');
+            $where = [];
+            $where[] = ['complaint_sell','=',0];
+            $where[] = ['lan', '=', 0];
+            $where[] = ['payment_behalf', '=', 1];
+            $where[] = ['pay_status', '=', 0];
+            if ($key)$where[] = ['in_order_id|username|out_order_id|busername','=',$key];
+            $list = MatchModel2::where($where)
+                ->order('id desc')
+                ->paginate(array('list_rows' => $pageSize, 'page' => $page))
+                ->toArray();
+            foreach ($list['data'] as $k => $v) {
+                $list['data'][$k]['create_time'] = date('Y-m-d H:i:s', $v['create_time']);
+                $list['data'][$k]['dogName'] = DogList::where('id', $v['dog_id'])->value('name');
+                $list['data'][$k]['mobile']=UsersModel::where('id', $v['uid'])->value('mobile');
+                $list['data'][$k]['mobilet']=UsersModel::where('id', $v['bid'])->value('mobile');
+                switch ($v['pay_status']) {
+                    case 0:
+                        $list['data'][$k]['pay_status'] = '等待打款';
+                        break;
+                    case 1:
+                        $list['data'][$k]['pay_status'] = '等待收款';
+                        break;
+                    case 2:
+                        $list['data'][$k]['pay_status'] = '已收款';
+                        break;
+                }
+                switch ($v['is_pay']) {
+                    case 0:
+                        $list['data'][$k]['is_pay'] = '交易中';
+                        break;
+                    case 1:
+                        $list['data'][$k]['is_pay'] = '交易完成';
+                        break;
+                }
+                if ($list['data'][$k]['pay_time'] > 0) {
+                    $list['data'][$k]['pay_time'] = date('Y-m-d H:i:s', $v['pay_time']);
+                } else {
+                    $list['data'][$k]['pay_time'] = '--';
+                }
+                if ($list['data'][$k]['receipt_time'] > 0) {
+                    $list['data'][$k]['receipt_time'] = date('Y-m-d H:i:s', $v['receipt_time']);
+                } else {
+                    $list['data'][$k]['receipt_time'] = '--';
+                }
+            }
+            return $result = ['code' => 0, 'msg' => '获取成功!', 'data' => $list['data'], 'count' => $list['total'], 'rel' => 1];
+        }
+        return $this->fetch();
+    }
+
+    //提交代付
+
+    public function pay_payment_behalf(){
+
+        $type = input('type', 'pay');
+        $match_id = input('match_id', '');
+        $thumb = input('thumb', '');
+        $order_info = MatchModel2::where('id', $match_id)->find();
+
+        if (!$order_info)return ['code' => 0, 'msg' => '数据加载失败'];
+        switch ($type) {
+            case "pay":
+                if ($order_info['is_pay'] != 0)return ['code' => 0, 'msg' => '提交频繁'];
+                if ($order_info['pay_status'] != 0)return ['code' => 0, 'msg' => '区块写入中，请勿重复操作'];
+                if ($thumb == null)return ['code' => 0, 'msg' => '请上传凭证'];
+                
+
+
+                $res = MatchModel2::update([
+                    'id' => $order_info['id'],
+                    'image'=>$thumb,
+                    'pay_status' => 1,
+                    'pay_time' => time(),
+                ]);
+                if ($res) {
+                    return ['code' => 1, 'msg' => '付款完成'];
+                    
+                } else {
+                    return ['code' => 0, 'msg' => '网络超时'];
+                }
+                break;
+            default:
+                return ['code' => 0, 'msg' => '请规范操作'];
+        }
+
+    }
+
+    //会员资产
+
+    public function sell_re(){
+       
+       if (request()->isAjax()) {
+            $key = input('post.key');
+            $page = input('page') ? input('page') : 1;
+            $pageSize = input('limit') ? input('limit') : config('pageSize');
+            
+             $username=UsersModel::where('mobile', $key)->value('username');
+
+            if (!empty($username)) {
+                $key=$username;
+            } 
+
+            $where = [];
+            if ($key)$where[] = ['order_id|username','=',$key];
+            $where[] = ['order_type','=',1];
+            $where[] = ['tomorrow','<',2];
+            $where[] = ['match_status','=',0];
+            $where[] = ['del','=',0];
+            $where[] = ['lan','=',0];
+			$whrer=@file_get_contents('/tmp/notin1');
+            $list = MatchModel::where($where)
+				->where($whrer)
+                ->order('id desc')
+                ->paginate(array('list_rows' => $pageSize, 'page' => $page))
+                ->toArray();
+            foreach ($list['data'] as $k => $v) {
+                if ($v['order_source']){
+                    $ticheshijian = MatchModel::where('uid',$v['uid'])->where('order_id',$v['order_source'])->value('create_time');
+                    $list['data'][$k]['ticheshijian'] = date('Y-m-d H:i:s', $ticheshijian);
+
+                    $total_day = MatchModel2::where('uid',$v['uid'])->where('in_order_id',$v['order_source'])->value('total_day');
+                    $list['data'][$k]['shouyitianshu'] = $total_day;
+                }else{
+                    $list['data'][$k]['ticheshijian'] = '';
+                    $list['data'][$k]['shouyitianshu'] = '';
+                }
+
+                $list['data'][$k]['mobile']=UsersModel::where('id', $v['uid'])->value('mobile');
+
+                $list['data'][$k]['create_time'] = date('Y-m-d H:i:s', $v['create_time']);
+                $list['data'][$k]['dogName'] = DogList::where('id', $v['dog_id'])->value('name');
+                switch ($v['is_pay']) {
+                    case 0:
+                        $list['data'][$k]['is_pay'] = '未完成';
+                        break;
+                    case 1:
+                        $list['data'][$k]['is_pay'] = '已转让';
+                        break;
+                }
+                switch ($v['match_status']) {
+                    case 0:
+                        $list['data'][$k]['match_status'] = '未匹配';
+                        break;
+                    case 2:
+                        $list['data'][$k]['match_status'] = '已匹配';
+                        break;
+                }
+            }
+            return $result = ['code' => 0, 'msg' => '获取成功!', 'data' => $list['data'], 'count' => $list['total'], 'rel' => 1];
+        }
+        return $this->fetch();
+
+    }
+    // 转让记录
+    public function sell_record()
+    {
+        if (request()->isAjax()) {
+            $key = input('post.key');
+            $match_status = input('post.match_status');
+            $page = input('page') ? input('page') : 1;
+            $pageSize = input('limit') ? input('limit') : config('pageSize');
+            $where = [];
+            if ($match_status)$where[]=['match_status','=',$match_status-1];
+            if ($key)$where[] = ['order_id|username|dog_id','=',$key];
+            $where[] = ['order_type','=',1];
+            $where[] = ['tomorrow','<',2];
+            $where[] = ['del','=',0];
+            $where[] = ['lan','=',0];
+			$whrer=@file_get_contents('/tmp/notin1');
+            $list = MatchModel::where($where)
+				->where($whrer)
+                ->order('id desc')
+                ->paginate(array('list_rows' => $pageSize, 'page' => $page))
+                ->toArray();
+            foreach ($list['data'] as $k => $v) {
+                if ($v['order_source']){
+                    $ticheshijian = MatchModel::where('order_id',$v['order_source'])->value('create_time');
+                    $list['data'][$k]['ticheshijian'] = date('Y-m-d H:i:s', $ticheshijian);
+
+                    $total_day = MatchModel2::where('in_order_id',$v['order_source'])->value('total_day');
+                    $list['data'][$k]['shouyitianshu'] = $total_day;
+                }else{
+                    $list['data'][$k]['ticheshijian'] = '';
+                    $list['data'][$k]['shouyitianshu'] = '';
+                }
+
+                $list['data'][$k]['mobile']=UsersModel::where('id', $v['uid'])->value('mobile');
+
+                $list['data'][$k]['create_time'] = date('Y-m-d H:i:s', $v['create_time']);
+                $list['data'][$k]['dogName'] = DogList::where('id', $v['dog_id'])->value('name');
+                switch ($v['is_pay']) {
+                    case 0:
+                        $list['data'][$k]['is_pay'] = '未完成';
+                        break;
+                    case 1:
+                        $list['data'][$k]['is_pay'] = '已转让';
+                        break;
+                }
+                switch ($v['match_status']) {
+                    case 0:
+                        $list['data'][$k]['match_status'] = '未匹配';
+                        break;
+                    case 2:
+                        $list['data'][$k]['match_status'] = '已匹配';
+                        break;
+                }
+            }
+            return $result = ['code' => 0, 'msg' => '获取成功!', 'data' => $list['data'], 'count' => $list['total'], 'rel' => 1];
+        }
+        return $this->fetch();
+    }
+
+    public function recovery()
+    {
+        if (request()->isAjax()) {
+            $key = input('post.key');
+            $page = input('page') ? input('page') : 1;
+            $pageSize = input('limit') ? input('limit') : config('pageSize');
+            $where = [];
+            $where[] = ['del','=',0];
+            if ($key)$where[] = ['order_id|username','=',$key];
+            $where[] = ['order_type','=',1];
+            $where[] = ['tomorrow','=',2];
+            $where[] = ['lan','=',0];
+            $list = MatchModel::where($where)
+                ->order('id desc')
+                ->paginate(array('list_rows' => $pageSize, 'page' => $page))
+                ->toArray();
+            foreach ($list['data'] as $k => $v) {
+                if ($v['order_source']){
+                    $ticheshijian = MatchModel::where('uid',$v['uid'])->where('order_id',$v['order_source'])->value('create_time');
+                    $list['data'][$k]['ticheshijian'] = date('Y-m-d H:i:s', $ticheshijian);
+
+                    $total_day = MatchModel2::where('uid',$v['uid'])->where('in_order_id',$v['order_source'])->value('total_day');
+                    $list['data'][$k]['shouyitianshu'] = $total_day;
+                }else{
+                    $list['data'][$k]['ticheshijian'] = '';
+                    $list['data'][$k]['shouyitianshu'] = '';
+                }
+                $userbank=Db::name('user_bank')->where('uid',$v['uid'])->where('is_default',1)->find(); 
+                $list['data'][$k]['bank_name'] = $userbank['bank_name'];
+                $list['data'][$k]['bank_card'] = $userbank['bank_card'];
+                 $list['data'][$k]['realname'] = $userbank['realname'];
+                $list['data'][$k]['image'] = config('http_type').$_SERVER['HTTP_HOST'].'/'.$userbank['image'];
+
+                $list['data'][$k]['create_time'] = date('Y-m-d H:i:s', $v['create_time']);
+                $list['data'][$k]['dogName'] = DogList::where('id', $v['dog_id'])->value('name');
+                switch ($v['is_pay']) {
+                    case 0:
+                        $list['data'][$k]['is_pay'] = '未完成';
+                        break;
+                    case 1:
+                        $list['data'][$k]['is_pay'] = '已转让';
+                        break;
+                }
+            }
+            return $result = ['code' => 0, 'msg' => '获取成功!', 'data' => $list['data'], 'count' => $list['total'], 'rel' => 1];
+        }
+         $where[] = ['order_type','=',1];
+        $where[] = ['tomorrow','=',2];
+        $money = MatchModel::where($where)->sum('money');
+
+         $this->assign("money", $money);
+        return $this->fetch();
+    }
+    //资产燃烧
+     public function ran_trader_re()
+    {
+       
+        $id = input('id');
+        $info = MatchModel2::get($id);
+        if (!$info) return $result = ['code' => 0, 'msg' => '记录不存在!'];
+        if ($info['income_status']<>1) return $result = ['code' => 0, 'msg' => '只能燃烧正在收益中的订单!'];
+        if (MatchModel2::where('id',$info['id'])->update(['del'=>2])) {
+            
+             UsersModel::where('id',$info['uid'])->setInc('doge',$info['money']);
+             HistoryModel::create([
+            'uid' => $info['uid'],
+            'username' => $info['username'],
+            'money' => $info['money'],
+            'type' => 'doge',
+            'remark' => '系统资产燃烧',
+            'createtime' => time(),
+            'option' => 'income',
+        ]);
+           HistoryModel::create([
+            'uid' => $info['uid'],
+            'username' => $info['username'],
+            'money' => $info['money'],
+            'type' => 'ran',
+            'remark' => '系统资产燃烧',
+            'createtime' => time(),
+            'option' => 'income',
+        ]);   
+
+            return $result = ['code' => 1, 'msg' => '燃烧成功!'];
+        }
+        return $result = ['code' => 0, 'msg' => '燃烧失败!'];
+
+    }
+    //会员资产
+    public function trader_re()
+    {
+       
+       if (request()->isAjax()) {
+            $key = input('post.key');
+            $page = input('page') ? input('page') : 1;
+            $pageSize = input('limit') ? input('limit') : config('pageSize');
+            
+            $username=UsersModel::where('mobile', $key)->value('username');
+
+            if (!empty($username)) {
+                $key=$username;
+             } 
+
+            $where = [];
+            $where[]=['is_pay','=',1];
+            $where[]=['income_status','=',1];
+            $where[] = ['complaint_sell','=',0];
+            $where[] = ['del', '=', 0];
+            $where[] = ['lan', '=', 0];
+			$whrer=@file_get_contents('/tmp/notin2');
+            if ($key)$where[] = ['in_order_id|username|out_order_id|busername|dog_id','=',$key];
+            $list = MatchModel2::where($where)
+				->where($whrer)
+                ->order('id desc')
+                ->paginate(array('list_rows' => $pageSize, 'page' => $page))
+                ->toArray();
+            foreach ($list['data'] as $k => $v) {
+                $list['data'][$k]['create_time'] = date('Y-m-d H:i:s', $v['create_time']);
+                $list['data'][$k]['bonus_time'] = date('Y-m-d H:i:s', $v['bonus_time']);
+                $list['data'][$k]['dogName'] = DogList::where('id', $v['dog_id'])->value('name');
+                $list['data'][$k]['mobile']=UsersModel::where('id', $v['uid'])->value('mobile');
+                $list['data'][$k]['mobilet']=UsersModel::where('id', $v['bid'])->value('mobile');
+                switch ($v['pay_status']) {
+                    case 0:
+                        $list['data'][$k]['pay_status'] = '等待打款';
+                        break;
+                    case 1:
+                        $list['data'][$k]['pay_status'] = '等待收款';
+                        break;
+                    case 2:
+                        $list['data'][$k]['pay_status'] = '已收款';
+                        break;
+                }
+                switch ($v['is_pay']) {
+                    case 0:
+                        $list['data'][$k]['is_pay'] = '交易中';
+                        break;
+                    case 1:
+                        $list['data'][$k]['is_pay'] = '交易完成';
+                        break;
+                }
+                if ($list['data'][$k]['pay_time'] > 0) {
+                    $list['data'][$k]['pay_time'] = date('Y-m-d H:i:s', $v['pay_time']);
+                } else {
+                    $list['data'][$k]['pay_time'] = '--';
+                }
+                if ($list['data'][$k]['receipt_time'] > 0) {
+                    $list['data'][$k]['receipt_time'] = date('Y-m-d H:i:s', $v['receipt_time']);
+                } else {
+                    $list['data'][$k]['receipt_time'] = '--';
+                }
+            }
+            return $result = ['code' => 0, 'msg' => '获取成功!', 'data' => $list['data'], 'count' => $list['total'], 'rel' => 1];
+        }
+        return $this->fetch();
+
+    }
+
+    public function trader_record()
+    {
+        if (request()->isAjax()) {
+            $key = input('post.key');
+            $page = input('page') ? input('page') : 1;
+            $pageSize = input('limit') ? input('limit') : config('pageSize');
+            $where = [];
+            $where[] = ['complaint_sell','=',0];
+            $where[] = ['lan', '=', 0];
+			$whrer=@file_get_contents('/tmp/notin2');
+            if ($key)$where[] = ['in_order_id|username|out_order_id|busername','=',$key];
+            $list = MatchModel2::where($where)
+				->where($whrer)
+                ->order('id desc')
+                ->paginate(array('list_rows' => $pageSize, 'page' => $page))
+                ->toArray();
+            foreach ($list['data'] as $k => $v) {
+                $list['data'][$k]['create_time'] = date('Y-m-d H:i:s', $v['create_time']);
+                $list['data'][$k]['dogName'] = DogList::where('id', $v['dog_id'])->value('name');
+                $list['data'][$k]['mobile']=UsersModel::where('id', $v['uid'])->value('mobile');
+                $list['data'][$k]['mobilet']=UsersModel::where('id', $v['bid'])->value('mobile');
+                switch ($v['pay_status']) {
+                    case 0:
+                        $list['data'][$k]['pay_status'] = '等待打款';
+                        break;
+                    case 1:
+                        $list['data'][$k]['pay_status'] = '等待收款';
+                        break;
+                    case 2:
+                        $list['data'][$k]['pay_status'] = '已收款';
+                        break;
+                }
+                switch ($v['is_pay']) {
+                    case 0:
+                        $list['data'][$k]['is_pay'] = '交易中';
+                        break;
+                    case 1:
+                        $list['data'][$k]['is_pay'] = '交易完成';
+                        break;
+                }
+                if ($list['data'][$k]['pay_time'] > 0) {
+                    $list['data'][$k]['pay_time'] = date('Y-m-d H:i:s', $v['pay_time']);
+                } else {
+                    $list['data'][$k]['pay_time'] = '--';
+                }
+                if ($list['data'][$k]['receipt_time'] > 0) {
+                    $list['data'][$k]['receipt_time'] = date('Y-m-d H:i:s', $v['receipt_time']);
+                } else {
+                    $list['data'][$k]['receipt_time'] = '--';
+                }
+            }
+            return $result = ['code' => 0, 'msg' => '获取成功!', 'data' => $list['data'], 'count' => $list['total'], 'rel' => 1];
+        }
+        return $this->fetch();
+    }
+
+     public function trader_recordtt()
+    {
+        if (request()->isAjax()) {
+            $key = input('post.key');
+            $page = input('page') ? input('page') : 1;
+            $pageSize = input('limit') ? input('limit') : config('pageSize');
+            $where = [];
+            $where[] = ['is_pay','=',0];
+            $where[] = ['complaint_sell','=',1];
+            $where[] = ['lan', '=', 0];
+			$whrer=@file_get_contents('/tmp/notin2');
+            if ($key)$where[] = ['in_order_id|username|out_order_id|busername','=',$key];
+            $list = MatchModel2::where($where)
+				->where($whrer)
+                ->order('id desc')
+                ->paginate(array('list_rows' => $pageSize, 'page' => $page))
+                ->toArray();
+            foreach ($list['data'] as $k => $v) {
+                $list['data'][$k]['create_time'] = date('Y-m-d H:i:s', $v['create_time']);
+                $list['data'][$k]['dogName'] = DogList::where('id', $v['dog_id'])->value('name');
+                switch ($v['pay_status']) {
+                    case 0:
+                        $list['data'][$k]['pay_status'] = '等待打款';
+                        break;
+                    case 1:
+                        $list['data'][$k]['pay_status'] = '等待收款';
+                        break;
+                    case 2:
+                        $list['data'][$k]['pay_status'] = '已收款';
+                        break;
+                }
+                switch ($v['is_pay']) {
+                    case 0:
+                        $list['data'][$k]['is_pay'] = '交易中';
+                        break;
+                    case 1:
+                        $list['data'][$k]['is_pay'] = '交易完成';
+                        break;
+                }
+                if ($list['data'][$k]['pay_time'] > 0) {
+                    $list['data'][$k]['pay_time'] = date('Y-m-d H:i:s', $v['pay_time']);
+                } else {
+                    $list['data'][$k]['pay_time'] = '--';
+                }
+                if ($list['data'][$k]['receipt_time'] > 0) {
+                    $list['data'][$k]['receipt_time'] = date('Y-m-d H:i:s', $v['receipt_time']);
+                } else {
+                    $list['data'][$k]['receipt_time'] = '--';
+                }
+            }
+            return $result = ['code' => 0, 'msg' => '获取成功!', 'data' => $list['data'], 'count' => $list['total'], 'rel' => 1];
+        }
+        return $this->fetch();
+    }
+
+    public function saleproceeds(){
+
+        if (request()->isAjax()) {
+            $key = input('post.key');
+            $page = input('page') ? input('page') : 1;
+            $pageSize = input('limit') ? input('limit') : config('pageSize');
+            $where = [];
+            if ($key)$where[] = ['username|mobile','=',$key];
+            $list = Db::name('withdrawal')->where($where)
+                ->order('id desc')
+                ->paginate(array('list_rows' => $pageSize, 'page' => $page))
+                ->toArray();
+            foreach ($list['data'] as $k => $v) {
+                $list['data'][$k]['time'] = date('Y-m-d H:i:s', $v['time']);
+
+                switch ($v['is_pay']) {
+                    case 0:
+                        $list['data'][$k]['is_pay'] = '审核中';
+                        break;
+                    case 1:
+                        $list['data'][$k]['is_pay'] = '已同意';
+                        break;
+                    case 2:
+                        $list['data'][$k]['is_pay'] = '已拒绝';
+                        break;    
+                }
+                
+            }
+            return $result = ['code' => 0, 'msg' => '获取成功!', 'data' => $list['data'], 'count' => $list['total'], 'rel' => 1];
+        }
+        return $this->fetch();
+
+    }
+
+    public function withdrawalDel(){
+        $kk=db('withdrawal')->where(array('id'=>input('id')))->delete();
+        if ($kk>0) {
+            cache('adList', NULL);
+            return ['code'=>1,'msg'=>'删除成功！'];
+        }else{
+             cache('adList', NULL);
+            return ['code'=>1,'msg'=>'删除失败！'];
+        }
+        
+    }
+    public function withdrawalagree(){
+
+         $withdrawal=db('withdrawal')->where(array('id'=>input('id')))->where('is_pay',0)->find();
+         if (!$withdrawal) {
+              cache('adList', NULL);
+            return ['code'=>1,'msg'=>'订单不存在'];
+         }
+           $dogInfo = DogList::where([
+            ['is_sell', '=', 1],
+            ['price', '<=', $withdrawal['money']],
+            ['price2', '>=', $withdrawal['money']],
+        ])->find();
+
+        if (!$dogInfo){
+             cache('adList', NULL);
+            return ['code'=>1,'msg'=>'暂无此额度'];
+        } 
+         $number = MatchModel::where([['order_type', '=', 1], ['create_time', '> time', strtotime(date('Y-m-d'))]])->count() + 1;
+        $order_id = date('YmdHis') . '22' . $number;
+
+         $yet=MatchModel::create([
+                'order_id' => $order_id,
+                'uid' => $withdrawal['uid'],
+                'username' => $withdrawal['username'],
+                'create_time' => time(),
+                'money' => $withdrawal['money'],
+                'unmatched' => $withdrawal['money'],
+                'order_type' => 1,
+                'is_pay' => 0,
+                'is_bonus' => 1,
+                'trader' => 2,
+                'match_status' => 0,
+                'dog_id' => $dogInfo['id'],
+            ]);
+
+         if ($yet>0) {
+             $wit=db('withdrawal')->where(array('id'=>input('id')))->update(['is_pay'=>1]);
+              cache('adList', NULL);
+            return ['code'=>1,'msg'=>'同意成功'];
+         }
+
+
+    }
+    public function withdrawalrefuse(){
+       
+        $withdrawal=db('withdrawal')->where(array('id'=>input('id')))->where('is_pay',0)->find();
+         if (!$withdrawal) {
+              cache('adList', NULL);
+            return ['code'=>1,'msg'=>'订单不存在'];
+         }
+          $yet=Db::name('users')->where('id', $withdrawal['uid'])->setInc('dynamic_wallet', $withdrawal['money']);
+           
+            HistoryModel::create([
+                'uid' => $withdrawal['uid'],
+                'username' => $withdrawal['username'],
+                'money' => $withdrawal['money'],
+                'type' => 'dynamic_wallet',
+                'remark' => '拒绝出售',
+                'createtime' => time(),
+                'option' => 'income',
+            ]);
+         
+         if ($yet>0) {
+             $wit=db('withdrawal')->where(array('id'=>input('id')))->update(['is_pay'=>2]);
+              cache('adList', NULL);
+            return ['code'=>1,'msg'=>'拒绝成功'];
+         }else{
+              cache('adList', NULL);
+            return ['code'=>1,'msg'=>'拒绝失败'];
+         }
+
+    }
+
+    public function trader_details()
+    {
+        $oid = input('id', '');
+        $info = MatchModel2::get($oid);
+        if ($info) {
+            if ($info['create_time'] > 0) {
+                $info['create_time'] = date('Y-m-d H:i:s', $info['create_time']);
+            } else {
+                $info['create_time'] = '--';
+            }
+            if ($info['pay_time'] > 0) {
+                $info['pay_time'] = date('Y-m-d H:i:s', $info['pay_time']);
+            } else {
+                $info['pay_time'] = '暂未打款';
+            }
+            if ($info['receipt_time'] > 0) {
+                $info['receipt_time'] = date('Y-m-d H:i:s', $info['receipt_time']);
+            } else {
+                $info['receipt_time'] = '暂未收款';
+            }
+
+            $info['dogName'] = DogList::where('id', $info['dog_id'])->value('name');
+            switch ($info['pay_status']) {
+                case 0:
+                    $info['pay_status'] = '等待打款';
+                    break;
+                case 1:
+                    $info['pay_status'] = '等待收款';
+                    break;
+                case 2:
+                    $info['pay_status'] = '已收款';
+                    break;
+            }
+            switch ($info['is_pay']) {
+                case 0:
+                    $info['is_pay'] = '交易中';
+                    break;
+                case 1:
+                    $info['is_pay'] = '交易完成';
+                    break;
+            }
+            if ($info['image']) $info['image'] = config('http_type') . $_SERVER['HTTP_HOST'] . '/' . $info['image'];
+        }
+        $this->assign('info', $info);
+        return $this->fetch();
+    }
+    /**
+     * 撤销匹配操作
+     */
+    public function undo_matching_save(){
+        $oid = input('oid');
+        $info = MatchModel2::get($oid);
+        if ( !$info) return array('status'=>false,'info'=>'返回订单信息为空！');
+        if ($info['is_pay'] ==1) return array('status'=>false,'info'=>'交易已完成，不可撤销');
+        Db::startTrans();
+        try{
+            $data = [];
+            $data['uid'] = $info['uid'];
+            $data['username'] = $info['username'];
+            $data['bid'] = $info['bid'];
+            $data['busername'] = $info['busername'];
+            $data['create_time'] = time();
+            $data['money'] = $info['money'];
+            $data['remark'] = "后台撤销{$info['in_order_id']}与{$info['out_order_id']}的匹配";
+            db::name('xfhistory')->insert($data);
+
+            //删除匹配订单
+            MatchModel2::where('id', $info['id'])->delete();
+
+            //设置收款订单可重新匹配、投诉状态重置
+            MatchModel::where('order_id', $info['out_order_id'])->where('uid',$info['bid'])->update([
+                'match_status' => 0,
+                'complaint' => 0,
+            ]);
+            //设置打款订单可重新匹配、投诉状态重置
+            MatchModel::where('order_id', $info['in_order_id'])->where('uid',$info['uid'])->update([
+                'match_status' => 0,
+                'complaint' => 0,
+            ]);
+            Db::commit();
+        } catch (\Exception $e) {
+            // 回滚事务
+            Db::rollback();
+            return errorAjax($e->getMessage(),['data'=>[]]);
+        }
+        return array('status'=>true,'info'=>"已撤销{$info['in_order_id']}与{$info['out_order_id']}的匹配");
+    }
+    /**
+     * 订单设置完成
+     */
+    public function set_order_finish(){
+        $oid = input('oid');
+        $order_info = MatchModel2::get($oid);
+        if ( !$order_info) return array('status'=>false,'info'=>'返回订单信息为空！');
+        if ($order_info['is_pay'] ==1) return array('status'=>false,'info'=>'交易已完成');
+        if ($order_info['pay_status'] !=1) return array('status'=>false,'info'=>'订单还未打款');
+        $data = [];
+        $data['uid'] = $order_info['uid'];
+        $data['username'] = $order_info['username'];
+        $data['bid'] = $order_info['bid'];
+        $data['busername'] = $order_info['busername'];
+        $data['create_time'] = time();
+        $data['money'] = $order_info['money'];
+        $data['remark'] = "后台设置{$order_info['in_order_id']}与{$order_info['out_order_id']}的匹配交易完成";
+        db::name('xfhistory')->insert($data);
+        $param = [
+            'id' => $order_info['id'],
+            'in_order_id' => $order_info['in_order_id'],
+            'out_order_id' => $order_info['out_order_id'],
+            'uid' => $order_info['uid'],
+            'bid' => $order_info['bid'],
+        ];
+        $res = Hook::exec('app\\common\behavior\\FinishMatchTrader', $param);
+        if ($res['status'] == true) {
+            return array('status'=>true,'info'=>'确认成功');
+        } else {
+            return array('status'=>false,'info'=>'确认失败');
+        }
+    }
+    //设置出售订单是否锁定，锁定后不可匹配
+    public function order_out_status()
+    {
+        $id = input('post.id');
+        $is_out= input('post.is_out');
+        if ( MatchModel::where('id=' . $id)->update(['is_out' => $is_out]) !== false) {
+            return ['status' => 1, 'msg' => '设置成功!'];
+        } else {
+            return ['status' => 0, 'msg' => '设置失败!'];
+        }
+    }
+    //设置会员优先转让
+    public function first_sell()
+    {
+        $id = input('post.id');
+        $first_sell= input('post.first_sell');
+        if ( MatchModel::where('id=' . $id)->update(['first_sell' => $first_sell]) !== false) {
+            return ['status' => 1, 'msg' => '设置成功!'];
+        } else {
+            return ['status' => 0, 'msg' => '设置失败!'];
+        }
+    }
+}
